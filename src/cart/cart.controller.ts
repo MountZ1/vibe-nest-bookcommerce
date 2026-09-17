@@ -10,6 +10,11 @@ import { strict } from "assert";
 export class CartController {
   constructor(private readonly cartService: CartService) { }
 
+  @Get()
+  async findAll(@CurrentUser() user: any) {
+    return this.cartService.findAllByUser(user.userId);
+  }
+
   @Post("")
   async addItem(@Body() dto: CartDTO, @CurrentUser() user: any) {
     return this.cartService.create(dto, user.userId);

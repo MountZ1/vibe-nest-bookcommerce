@@ -20,12 +20,31 @@ export class CartService {
     private readonly productService: ProductsService,
   ) { }
 
+  async findAllByUser(user_id: number) {
+    return this.cart
+      .createQueryBuilder("cart")
+      .select([
+        "cart.id AS id",
+        "cart.book_id AS book_id",
+        "cart.quantity AS quantity",
+        "product.title AS title",
+        "product.slug AS slug",
+        "product.price AS price",
+        "product.image AS image",
+        "product.stock AS stock",
+      ])
+      .leftJoin(Product, "product", "product.id = cart.book_id")
+      .where("cart.user_id = :user_id", { user_id })
+      .getRawMany();
+  }
+
   async create(dto: CartDTO, user_id: number) {
-    return await this.cart.create({
+    const cart = this.cart.create({
       book_id: dto.book_id,
       quantity: dto.quantity,
       user_id: user_id,
     });
+    return this.cart.save(cart);
   }
 
   async updateQuantity(dto: UpdateCartQuantity, user_id: number) {

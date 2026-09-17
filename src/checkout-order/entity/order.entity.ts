@@ -27,9 +27,6 @@ export class OrderEntity {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column()
-  user_id: number;
-
   @ManyToOne(() => User, (user) => user.purchases, { nullable: false })
   @JoinColumn({ name: "user_id" })
   user: User;
@@ -58,7 +55,7 @@ export class OrderEntity {
   status: PurchaseStatus;
 
   @Column({ type: "date" })
-  purchase_at: Date;
+  purchased_at: Date;
 
   @CreateDateColumn()
   created_at: Date;

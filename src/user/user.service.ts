@@ -3,9 +3,11 @@ import {
   ConflictException,
   InternalServerErrorException,
   UnauthorizedException,
+  Inject,
+  NotFoundException,
 } from "@nestjs/common";
-import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { InjectDataSource, InjectRepository } from "@nestjs/typeorm";
+import { DataSource, Repository } from "typeorm";
 import * as bcrypt from "bcrypt";
 import { CreateUserDto } from "./dto/create-user.dto";
 import { User } from "./entities/user.entity";
@@ -13,6 +15,9 @@ import { Role } from "./entities/role.entity";
 import { LoginDTO } from "./dto/login.dto";
 import { JwtService } from "@nestjs/jwt";
 import { Profile } from "./entities/profile.entity";
+import { CACHE_MANAGER } from "@nestjs/cache-manager";
+import { Cache } from "cache-manager";
+import { UpdateProfileDto } from "./dto/update-profile.dto";
 
 @Injectable()
 export class UsersService {
@@ -23,7 +28,11 @@ export class UsersService {
     private readonly roleRepository: Repository<Role>,
     @InjectRepository(Profile)
     private readonly profileRepository: Repository<Profile>,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
     private readonly jwtService: JwtService,
+    @Inject(CACHE_MANAGER)
+    private readonly cacheManager: Cache,
   ) { }
 
   async createUser(dto: CreateUserDto) {
@@ -90,6 +99,47 @@ export class UsersService {
   async getUserProfile(user: any) {
     return this.profileRepository.findOne({
       where: { user_id: user.userId },
+    });
+  }
+
+  async logout(token: string) {
+    const decoded = this.jwtService.decode(token) as { exp?: number } | null;
+
+    if (!decoded?.exp) {
+      throw new UnauthorizedException("Invalid token");
+    }
+
+    const nowInSeconds = Math.floor(Date.now() / 1000);
+    const remainingSeconds = decoded.exp - nowInSeconds;
+
+    if (remainingSeconds <= 0) {
+      return { message: "Token already expired" };
+    }
+
+    await this.cacheManager.set(
+      `blacklist_token:${token}`,
+      true,
+      remainingSeconds * 1000, // TTL dalam ms, samain sisa umur token
+    );
+
+    return { message: "Logged out successfully" };
+  }
+
+  async updateProfile(dto: UpdateProfileDto, user_id: number) {
+    const profile = await this.profileRepository.findOne({ where: { user_id } });
+    if (!profile) {
+      throw new NotFoundException("Profile not found");
+    }
+
+    return await this.dataSource.transaction(async (manager) => {
+      Object.assign(profile, dto);
+      const updatedProfile = await manager.save(Profile, profile);
+
+      if (dto.full_name) {
+        await manager.update(User, { id: user_id }, { name: dto.full_name });
+      }
+
+      return updatedProfile;
     });
   }
 }

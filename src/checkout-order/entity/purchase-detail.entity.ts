@@ -21,6 +21,12 @@ export class PurchaseDetailEntity {
   @Column("decimal", { precision: 10, scale: 2 })
   price: number;
 
+  @Column("decimal", { precision: 10, scale: 2 })
+  subtotal: number;
+
+  @Column({ type: "int", unsigned: true, default: 1 })
+  quantity: number;
+
   @ManyToOne(() => OrderEntity, (order) => order.detail)
   @JoinColumn({ name: "purchase_id" })
   purchase: OrderEntity;

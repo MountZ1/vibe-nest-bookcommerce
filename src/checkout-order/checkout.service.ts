@@ -76,7 +76,7 @@ export class CheckoutService {
 
     const products = await this.productRepo.find({
       where: { id: In(bookIds) },
-      select: { id: true, price: true, weight: true },
+      select: { id: true, price: true, weight: true, title: true, image: true },
     });
 
     if (products.length !== bookIds.length) {
@@ -92,6 +92,8 @@ export class CheckoutService {
         book_id: cart.book_id,
         quantity: cart.quantity,
         price: Number(product.price),
+        title: product.title,
+        image: product.image,
         weight: product.weight,
       };
     });
@@ -137,12 +139,16 @@ export class CheckoutService {
       USER_REQUEST: `shipping_cost_${totalWeight}_to_${location}`,
     };
 
-    let expeditionCodes = await this.cacheManager.get<string[]>(cacheKey.EXPEDITIONS);
-    if (!expeditionCodes) {
-      const expeditions = await this.expeditionRepo.find({ select: { code: true } });
-      expeditionCodes = expeditions.map((e) => e.code);
-      await this.cacheManager.set(cacheKey.EXPEDITIONS, expeditionCodes, 30 * 60 * 1000);
+    let expeditions = await this.cacheManager.get<{ id: number; code: string }[]>(
+      cacheKey.EXPEDITIONS,
+    );
+    if (!expeditions) {
+      expeditions = await this.expeditionRepo.find({ select: { id: true, code: true } });
+      await this.cacheManager.set(cacheKey.EXPEDITIONS, expeditions, 30 * 60 * 1000);
     }
+
+    const expeditionCodes = expeditions.map((e) => e.code);
+    const expeditionMap = new Map(expeditions.map((e) => [e.code, e.id])); // code -> id
 
     let districtOrigin = await this.cacheManager.get<DistrictOrigin>(cacheKey.DISTRICT_ORIGIN);
     if (!districtOrigin) {
@@ -185,12 +191,21 @@ export class CheckoutService {
         },
       );
 
+      const json = await response.json();
+
       if (!response.ok) {
-        throw new InternalServerErrorException("Failed to fetch shipping cost");
+        throw new InternalServerErrorException(
+          json.meta?.message || "Failed to fetch shipping cost",
+        );
       }
 
-      const json = await response.json();
-      shippingOptions = json.data;
+      // Merge expedition_id ke tiap hasil, cocokkan berdasarkan code
+      shippingOptions = (json.data as ShippingOption[])
+        .map((option) => ({
+          ...option,
+          expedition_id: expeditionMap.get(option.code) ?? null,
+        }))
+        .filter((option) => option.expedition_id !== null); // buang kalau code tidak match di DB
 
       await this.cacheManager.set(cacheKey.USER_REQUEST, shippingOptions, 30 * 60 * 1000);
     }
@@ -243,22 +258,25 @@ export class CheckoutService {
         await manager.decrement(Product, { id: item.book_id }, "stock", item.quantity);
       }
 
-      const order = manager.create(OrderEntity, {
-        user_id,
+      const orderData = {
+        user: { id: user_id },
         expedition: { id: dto.expedition_id },
         invoice_number: invoiceNumber,
-        subtotal,
+        subtotal: subtotal,
         shipping_cost: shippingCost,
         total_price: totalPrice,
         status: PurchaseStatus.PENDING,
-        purchase_at: new Date(),
-      });
+        purchased_at: new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Jakarta" }),
+      };
+
+      const order = manager.create(OrderEntity, orderData);
       const savedOrder = await manager.save(order);
 
       const orderDetails = details.map((item) =>
         manager.create(PurchaseDetailEntity, {
           purchase: { id: savedOrder.id },
           book: { id: item.book_id },
+          subtotal: item.price * item.quantity,
           quantity: item.quantity,
           price: item.price,
         }),
@@ -269,5 +287,100 @@ export class CheckoutService {
 
       return savedOrder;
     });
+  }
+
+  async getOrderByUserId(user_id: number, page: number = 1, limit: number = 10) {
+    const [orders, total] = await this.orderRepo
+      .createQueryBuilder("order")
+      .leftJoin("order.detail", "detail")
+      .leftJoin("detail.book", "product")
+      .select([
+        "order.id",
+        "order.invoice_number",
+        "order.subtotal",
+        "order.shipping_cost",
+        "order.total_price",
+        "order.status",
+        "order.purchased_at",
+        "detail.id",
+        "detail.quantity",
+        "product.id",
+        "product.title",
+        "product.image",
+      ])
+      .where("order.user_id = :user_id", { user_id })
+      .orderBy("order.purchased_at", "DESC")
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const data = orders.map((order) => {
+      const firstDetail = order.detail?.[0];
+
+      return {
+        invoice_number: order.invoice_number,
+        subtotal: order.subtotal,
+        shipping_cost: order.shipping_cost,
+        total_price: order.total_price,
+        status: order.status,
+        purchased_at: order.purchased_at,
+        total_items: order.detail.reduce((sum, d) => sum + d.quantity, 0),
+        item: firstDetail
+          ? {
+            title: firstDetail.book?.title ?? null,
+            image: firstDetail.book?.image ?? null,
+            quantity: firstDetail.quantity,
+          }
+          : null,
+        has_more: order.detail.length > 1,
+      };
+    });
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        total_pages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async getOrderByInvoice(invoice_number: string, user_id: number) {
+    const order = await this.orderRepo
+      .createQueryBuilder("order")
+      .leftJoinAndSelect("order.expedition", "expedition")
+      .leftJoinAndSelect("order.detail", "detail")
+      .leftJoinAndSelect("detail.book", "book")
+      .where("order.invoice_number = :invoice_number", { invoice_number })
+      .andWhere("order.user_id = :user_id", { user_id })
+      .getOne();
+
+    if (!order) {
+      throw new NotFoundException("Order not found");
+    }
+
+    return {
+      invoice_number: order.invoice_number,
+      subtotal: order.subtotal,
+      shipping_cost: order.shipping_cost,
+      total_price: order.total_price,
+      status: order.status,
+      purchased_at: order.purchased_at,
+      expedition: {
+        name: order.expedition?.name ?? null,
+        code: order.expedition?.code ?? null,
+      },
+      items: order.detail.map((d) => ({
+        id: d.id,
+        book_id: d.book?.id,
+        title: d.book?.title,
+        image: d.book?.image,
+        quantity: d.quantity,
+        price: d.price,
+        subtotal: d.price * d.quantity,
+      })),
+    };
   }
 }

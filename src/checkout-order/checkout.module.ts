@@ -8,6 +8,7 @@ import { PurchaseDetailEntity } from "./entity/purchase-detail.entity";
 import { ProductsModule } from "src/products/products.module";
 import { CartModule } from "src/cart/cart.module";
 import { UserModule } from "src/user/user.module";
+import { ZonesModule } from "src/zones/zones.module";
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { UserModule } from "src/user/user.module";
     ProductsModule,
     CartModule,
     UserModule,
+    ZonesModule,
   ],
   controllers: [CheckoutController],
   providers: [CheckoutService],
